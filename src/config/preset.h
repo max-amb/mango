@@ -30,5 +30,5 @@ static const TabletPadButton tabletpadbuttons[] = {
 };
 
 /* Pen active area: value 0.0 => 1.0         { x,    y,    width, height } */
-static const int tabletmaptosurface        = 1;  /* map tablet input to surface(1) or monitor(0) */
+static const int tabletmaptosurface        = 0;  /* map tablet input to surface(1) or monitor(0) */
 static const double tablet_area[4] 		   = { 0.4,  0.4,  0.4,   0.4 };
