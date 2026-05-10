@@ -15,7 +15,9 @@ static const struct xkb_rule_names xkb_fallback_rules = {
 
 static const TabletButton tabletbuttons[] = {
     /* button       state                  function    argument */
-{ BTN_STYLUS,   WLR_BUTTON_PRESSED,    killclient_cb,      {0}},
+{ BTN_STYLUS,   WLR_BUTTON_PRESSED,    killclient,      {0}},
+ { BTN_STYLUS2,       WLR_BUTTON_PRESSED,    spawn,            {.v = "ghostty"} },
+
 /*  { BTN_STYLUS2,  WLR_BUTTON_PRESSED,    killclient, {0} }, */
 	{ 0,            0,                     NULL,       {0} }
 };
@@ -23,7 +25,7 @@ static const TabletButton tabletbuttons[] = {
 static const TabletPadButton tabletpadbuttons[] = {
 	/* button  state                  function          argument */
 /*  { 0,       WLR_BUTTON_PRESSED,    spawn,            {.v = termcmd} }, */
-  { 1,       WLR_BUTTON_PRESSED,    killclient_cb,       {0} },
+//  { 1,       WLR_BUTTON_PRESSED,    killclient_cb,       {0} },
 /*  { 2,       WLR_BUTTON_PRESSED,    togglefloating,   {0} },*/
 /*  { 3,       WLR_BUTTON_PRESSED,    zoom,             {0} },*/
 	{ 0,            0,                     NULL,       {0} }

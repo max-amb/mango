@@ -588,7 +588,7 @@ typedef struct {
 typedef struct {
     uint32_t button;
     uint32_t state;
-    void (*func)(const Arg *);
+    int32_t (*func)(const Arg *);
     const Arg arg;
 } TabletButton;
 
