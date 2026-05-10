@@ -365,6 +365,10 @@ int32_t killclient(const Arg *arg) {
 	return 0;
 }
 
+void killclient_cb(const Arg *arg) {
+    (void)killclient(arg);
+}
+
 int32_t moveresize(const Arg *arg) {
 	const char *cursors[] = {"nw-resize", "ne-resize", "sw-resize",
 							 "se-resize"};
