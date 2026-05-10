@@ -73,9 +73,6 @@
 #include <wlr/types/wlr_subcompositor.h>
 #include <wlr/types/wlr_switch.h>
 #include <wlr/types/wlr_touch.h>
-#include <wlr/types/wlr_tablet_pad.h>
-#include <wlr/types/wlr_tablet_tool.h>
-#include <wlr/types/wlr_tablet_v2.h>
 #include <wlr/types/wlr_viewporter.h>
 #include <wlr/types/wlr_virtual_keyboard_v1.h>
 #include <wlr/types/wlr_virtual_pointer_v1.h>
@@ -318,7 +315,6 @@ struct Client {
 	Monitor *mon;
 	struct wlr_scene_tree *scene;
 	struct wlr_scene_rect *border; /* top, bottom, left, right */
-	struct wlr_scene_rect *droparea;
 	struct wlr_scene_shadow *shadow;
 	struct wlr_scene_tree *scene_surface;
 	struct wl_list link;
@@ -427,9 +423,6 @@ struct Client {
 	bool isfocusing;
 	struct Client *next_in_stack;
 	struct Client *prev_in_stack;
-	bool enable_drop_area_draw;
-	int32_t drop_direction;
-	struct wlr_box drag_tile_float_backup_geom;
 };
 
 typedef struct {
@@ -559,7 +552,6 @@ struct Monitor {
 	struct wlr_scene_optimized_blur *blur;
 	char last_surface_ws_name[256];
 	struct wlr_ext_workspace_group_handle_v1 *ext_group;
-	bool iscleanuping;
 };
 
 typedef struct {
@@ -575,22 +567,6 @@ typedef struct {
 	struct wl_listener unlock;
 	struct wl_listener destroy;
 } SessionLock;
-
-typedef struct DwindleNode DwindleNode;
-
-typedef struct {
-    uint32_t button;
-    uint32_t state;
-    void (*func)(const Arg *);
-    const Arg arg;
-} TabletPadButton;
-
-typedef struct {
-    uint32_t button;
-    uint32_t state;
-    void (*func)(const Arg *);
-    const Arg arg;
-} TabletButton;
 
 /* function declarations */
 static void applybounds(
@@ -642,7 +618,6 @@ static void createpointerconstraint(struct wl_listener *listener, void *data);
 static void cursorconstrain(struct wlr_pointer_constraint_v1 *constraint);
 static void commitpopup(struct wl_listener *listener, void *data);
 static void createpopup(struct wl_listener *listener, void *data);
-static void createtablet(struct wlr_input_device *device);
 static void createtouch(struct wlr_touch *touch);
 static void cursorframe(struct wl_listener *listener, void *data);
 static void cursorwarptohint(void);
@@ -656,10 +631,6 @@ static void destroynotify(struct wl_listener *listener, void *data);
 static void destroypointerconstraint(struct wl_listener *listener, void *data);
 static void destroysessionlock(struct wl_listener *listener, void *data);
 static void destroykeyboardgroup(struct wl_listener *listener, void *data);
-static void destroytablet(struct wl_listener *listener, void *data);
-static void destroytabletpad(struct wl_listener *listener, void *data);
-static void destroytabletsurfacenotify(struct wl_listener *listener, void *data);
-static void destroytablettool(struct wl_listener *listener, void *data);
 static Monitor *dirtomon(enum wlr_direction dir);
 static void setcursorshape(struct wl_listener *listener, void *data);
 
@@ -691,7 +662,8 @@ static void motionnotify(uint32_t time, struct wlr_input_device *device,
 						 double sy_unaccel);
 static void motionrelative(struct wl_listener *listener, void *data);
 
-static void reset_foreign_tolevel(Client *c, Monitor *oldmon, Monitor *newmon);
+static void reset_foreign_tolevel(Client *c);
+static void remove_foreign_topleve(Client *c);
 static void add_foreign_topleve(Client *c);
 static void exchange_two_client(Client *c1, Client *c2);
 static void outputmgrapply(struct wl_listener *listener, void *data);
@@ -728,13 +700,6 @@ static void touchup(struct wl_listener *listener, void *data);
 static void touchframe(struct wl_listener *listener, void *data);
 static void touchmotion(struct wl_listener *listener, void *data);
 static void touchcancel(struct wl_listener *listener, void *data);
-
-static void tablettoolmotion(struct wlr_tablet_v2_tablet_tool *tool, bool change_x, bool change_y, double x, double y, double dx, double dy, uint32_t time);
-static void tablettoolproximity(struct wl_listener *listener, void *data);
-static void tabletpadbutton(struct wl_listener *listener, void *data);
-static void tablettoolaxis(struct wl_listener *listener, void *data);
-static void tablettoolbutton(struct wl_listener *listener, void *data);
-static void tablettooltip(struct wl_listener *listener, void *data);
 
 static void unlocksession(struct wl_listener *listener, void *data);
 static void unmaplayersurfacenotify(struct wl_listener *listener, void *data);
@@ -864,13 +829,6 @@ static void pre_caculate_before_arrange(Monitor *m, bool want_animation,
 static void client_pending_fullscreen_state(Client *c, int32_t isfullscreen);
 static void client_pending_maximized_state(Client *c, int32_t ismaximized);
 static void client_pending_minimized_state(Client *c, int32_t isminimized);
-static void scroller_insert_stack(Client *c, Client *target_client,
-								  bool insert_before);
-static void dwindle_move_client(DwindleNode **root, Client *c, Client *target,
-								float ratio, int32_t dir);
-static void dwindle_resize_client_step(Monitor *m, Client *c, int32_t dx,
-									   int32_t dy);
-static void dwindle_resize_client(Monitor *m, Client *c);
 
 #include "data/static_keymap.h"
 #include "dispatch/bind_declare.h"
@@ -916,13 +874,6 @@ static struct wlr_cursor *cursor;
 static struct wlr_xcursor_manager *cursor_mgr;
 static struct wlr_session *session;
 
-static struct wlr_tablet_manager_v2 *tablet_mgr;
-static struct wlr_tablet_v2_tablet *tablet = NULL;
-static struct wlr_tablet_v2_tablet_tool *tablet_tool = NULL;
-static struct wlr_tablet_v2_tablet_pad *tablet_pad = NULL;
-static struct wlr_surface *tablet_curr_surface = NULL;
-static struct wl_listener destroy_tablet_surface_listener = {.notify = destroytabletsurfacenotify};
-
 static struct wlr_scene_rect *root_bg;
 static struct wlr_session_lock_manager_v1 *session_lock_mgr;
 static struct wlr_scene_rect *locked_bg;
@@ -939,7 +890,7 @@ static KeyboardGroup *kb_group;
 static struct wl_list inputdevices;
 static struct wl_list keyboard_shortcut_inhibitors;
 static uint32_t cursor_mode;
-static Client *grabc, *dropc;
+static Client *grabc;
 static int32_t rzcorner;
 static int32_t grabcx, grabcy;						   /* client-relative */
 static int32_t drag_begin_cursorx, drag_begin_cursory; /* client-relative */
@@ -1013,7 +964,6 @@ struct Pertag {
 	int32_t no_hide[LENGTH(tags) + 1];	/* no_hide per tag */
 	int32_t no_render_border[LENGTH(tags) + 1]; /* no_render_border per tag */
 	int32_t open_as_floating[LENGTH(tags) + 1]; /* open_as_floating per tag */
-	struct DwindleNode *dwindle_root[LENGTH(tags) + 1];
 	const Layout
 		*ltidxs[LENGTH(tags) + 1]; /* matrix of tags and layouts indexes  */
 };
@@ -1029,14 +979,6 @@ static struct wl_listener cursor_button = {.notify = buttonpress};
 static struct wl_listener cursor_frame = {.notify = cursorframe};
 static struct wl_listener cursor_motion = {.notify = motionrelative};
 static struct wl_listener cursor_motion_absolute = {.notify = motionabsolute};
-static struct wl_listener tablet_device_destroy = {.notify = destroytablet};
-static struct wl_listener tablet_pad_destroy = {.notify = destroytabletpad};
-static struct wl_listener tablet_pad_button = {.notify = tabletpadbutton};
-static struct wl_listener tablet_tool_axis = {.notify = tablettoolaxis};
-static struct wl_listener tablet_tool_button = {.notify = tablettoolbutton};
-static struct wl_listener tablet_tool_destroy = {.notify = destroytablettool};
-static struct wl_listener tablet_tool_proximity = {.notify = tablettoolproximity};
-static struct wl_listener tablet_tool_tip = {.notify = tablettooltip};
 static struct wl_listener gpu_reset = {.notify = gpureset};
 static struct wl_listener layout_change = {.notify = updatemons};
 static struct wl_listener new_idle_inhibitor = {.notify = createidleinhibitor};
@@ -1099,7 +1041,6 @@ static struct wl_event_source *sync_keymap;
 #include "ext-protocol/all.h"
 #include "fetch/fetch.h"
 #include "layout/arrange.h"
-#include "layout/dwindle.h"
 #include "layout/horizontal.h"
 #include "layout/vertical.h"
 
@@ -1231,7 +1172,6 @@ void swallow(Client *c, Client *w) {
 	c->scroller_proportion = w->scroller_proportion;
 	c->next_in_stack = w->next_in_stack;
 	c->prev_in_stack = w->prev_in_stack;
-	c->isglobal = w->isglobal;
 
 	if (w->next_in_stack)
 		w->next_in_stack->prev_in_stack = c;
@@ -1241,12 +1181,8 @@ void swallow(Client *c, Client *w) {
 	wl_list_insert(&w->link, &c->link);
 	wl_list_insert(&w->flink, &c->flink);
 
-	if (w->foreign_toplevel) {
-		wlr_foreign_toplevel_handle_v1_output_leave(w->foreign_toplevel,
-													w->mon->wlr_output);
-		wlr_foreign_toplevel_handle_v1_destroy(w->foreign_toplevel);
-		w->foreign_toplevel = NULL;
-	}
+	if (w->foreign_toplevel)
+		remove_foreign_topleve(w);
 
 	wlr_scene_node_set_enabled(&w->scene->node, false);
 	wlr_scene_node_set_enabled(&c->scene->node, true);
@@ -1254,25 +1190,10 @@ void swallow(Client *c, Client *w) {
 
 	if (!c->foreign_toplevel && c->mon)
 		add_foreign_toplevel(c);
-	else if (c->foreign_toplevel && c->mon) {
-		wlr_foreign_toplevel_handle_v1_output_enter(c->foreign_toplevel,
-													c->mon->wlr_output);
-	}
 
 	client_pending_fullscreen_state(c, w->isfullscreen);
 	client_pending_maximized_state(c, w->ismaximizescreen);
 	client_pending_minimized_state(c, w->isminimized);
-
-	Monitor *m;
-	wl_list_for_each(m, &mons, link) {
-		for (uint32_t t = 0; t < LENGTH(tags) + 1; t++) {
-			DwindleNode **root = &m->pertag->dwindle_root[t];
-			dwindle_remove(root, c);
-			DwindleNode *wn = dwindle_find_leaf(*root, w);
-			if (wn)
-				wn->client = c;
-		}
-	}
 }
 
 bool switch_scratchpad_client_state(Client *c) {
@@ -1283,7 +1204,7 @@ bool switch_scratchpad_client_state(Client *c) {
 		Monitor *oldmon = c->mon;
 		c->scratchpad_switching_mon = true;
 		c->mon = selmon;
-		reset_foreign_tolevel(c, oldmon, c->mon);
+		reset_foreign_tolevel(c);
 		client_update_oldmonname_record(c, selmon);
 
 		// 根据新monitor调整窗口尺寸
@@ -1932,9 +1853,6 @@ void arrangelayers(Monitor *m) {
 	if (!m->wlr_output->enabled)
 		return;
 
-	if (m->iscleanuping)
-		return;
-
 	/* Arrange exclusive surfaces from top->bottom */
 	for (i = 3; i >= 0; i--)
 		arrangelayer(m, &m->layers[i], &usable_area, 1);
@@ -1949,21 +1867,9 @@ void arrangelayers(Monitor *m) {
 		arrangelayer(m, &m->layers[i], &usable_area, 0);
 }
 
-bool pointer_is_trackpad(struct wlr_pointer *pointer) {
-	struct libinput_device *device;
-
-	if (wlr_input_device_is_libinput(&pointer->base) &&
-		(device = wlr_libinput_get_device_handle(&pointer->base))) {
-		if (libinput_device_config_tap_get_finger_count(device) > 0) {
-			return true;
-		}
-	}
-
-	return false;
-}
-
 void // 鼠标滚轮事件
 axisnotify(struct wl_listener *listener, void *data) {
+
 	/* This event is forwarded by the cursor when a pointer emits an axis event,
 	 * for example when you move the scroll wheel. */
 	struct wlr_pointer_axis_event *event = data;
@@ -1972,7 +1878,6 @@ axisnotify(struct wl_listener *listener, void *data) {
 	AxisBinding *a;
 	int32_t ji;
 	uint32_t adir;
-	double target_scroll_factor;
 	// IDLE_NOTIFY_ACTIVITY;
 	handlecursoractivity();
 	wlr_idle_notifier_v1_notify_activity(idle_notifier, seat);
@@ -2019,17 +1924,12 @@ axisnotify(struct wl_listener *listener, void *data) {
 	 * implemented checking the event's orientation and the delta of the event
 	 */
 	/* Notify the client with pointer focus of the axis event. */
-
-	target_scroll_factor = pointer_is_trackpad(event->pointer)
-							   ? config.trackpad_scroll_factor
-							   : config.axis_scroll_factor;
-
 	wlr_seat_pointer_notify_axis(
 		seat, // 滚轮事件发送给客户端也就是窗口
 		event->time_msec, event->orientation,
-		event->delta * target_scroll_factor,
-		roundf(event->delta_discrete * target_scroll_factor), event->source,
-		event->relative_direction);
+		event->delta * config.axis_scroll_factor,
+		roundf(event->delta_discrete * config.axis_scroll_factor),
+		event->source, event->relative_direction);
 }
 
 int32_t ongesture(struct wlr_pointer_swipe_end_event *event) {
@@ -2152,180 +2052,52 @@ void hold_end(struct wl_listener *listener, void *data) {
 										  event->time_msec, event->cancelled);
 }
 
-Client *find_closest_tiled_client(Client *c) {
-	Client *tc, *closest = NULL;
-	long min_dist = LONG_MAX;
+void place_drag_tile_client(Client *c) {
+	Client *tc = NULL;
+	Client *closest_client = NULL;
+	long min_distant = LONG_MAX;
+	long temp_distant;
+	int32_t x, y;
 
 	wl_list_for_each(tc, &clients, link) {
-		if (tc == c || !ISTILED(tc) || !VISIBLEON(tc, c->mon))
-			continue;
-
-		if (cursor->x >= tc->geom.x &&
-			cursor->x < tc->geom.x + tc->geom.width &&
-			cursor->y >= tc->geom.y &&
-			cursor->y < tc->geom.y + tc->geom.height) {
-			return tc;
-		}
-
-		int32_t dx = tc->geom.x + (int32_t)(tc->geom.width / 2) - cursor->x;
-		int32_t dy = tc->geom.y + (int32_t)(tc->geom.height / 2) - cursor->y;
-		long dist = (long)dx * dx + (long)dy * dy;
-
-		if (dist < min_dist) {
-			min_dist = dist;
-			closest = tc;
+		if (tc != c && ISTILED(tc) && VISIBLEON(tc, c->mon)) {
+			x = tc->geom.x + (int32_t)(tc->geom.width / 2) - cursor->x;
+			y = tc->geom.y + (int32_t)(tc->geom.height / 2) - cursor->y;
+			temp_distant = x * x + y * y;
+			if (temp_distant < min_distant) {
+				min_distant = temp_distant;
+				closest_client = tc;
+			}
 		}
 	}
-
-	return closest;
-}
-
-void scroller_insert_stack(Client *c, Client *target_client,
-						   bool insert_before) {
-	Client *stack_head = NULL;
-
-	if (!target_client || target_client->mon != c->mon) {
-		return;
-	} else {
-		c->isglobal = target_client->isglobal = 0;
-		c->isunglobal = target_client->isunglobal = 0;
-		c->tags = target_client->tags = get_tags_first_tag(target_client->tags);
+	if (closest_client && closest_client->link.prev != &c->link) {
+		wl_list_remove(&c->link);
+		c->link.next = &closest_client->link;
+		c->link.prev = closest_client->link.prev;
+		closest_client->link.prev->next = &c->link;
+		closest_client->link.prev = &c->link;
+	} else if (closest_client) {
+		exchange_two_client(c, closest_client);
 	}
-
-	if (c->isfullscreen) {
-		setfullscreen(c, 0);
-	}
-
-	if (c->ismaximizescreen) {
-		setmaximizescreen(c, 0);
-	}
-
-	exit_scroller_stack(c);
-	stack_head = get_scroll_stack_head(target_client);
-
-	if (insert_before) {
-		if (target_client->prev_in_stack) {
-			target_client->prev_in_stack->next_in_stack = c;
-		}
-		c->prev_in_stack = target_client->prev_in_stack;
-		c->next_in_stack = target_client;
-		target_client->prev_in_stack = c;
-
-	} else {
-		if (target_client->next_in_stack) {
-			target_client->next_in_stack->prev_in_stack = c;
-		}
-		c->next_in_stack = target_client->next_in_stack;
-		c->prev_in_stack = target_client;
-		target_client->next_in_stack = c;
-	}
-
-	if (stack_head->ismaximizescreen) {
-		setmaximizescreen(stack_head, 0);
-	}
-
-	if (stack_head->isfullscreen) {
-		setfullscreen(stack_head, 0);
-	}
-
-	arrange(c->mon, false, false);
-
-	return;
-}
-
-void try_scroller_drop(Client *c, Client *closest, int vertical) {
-
-	Client *stack_head = get_scroll_stack_head(closest);
-
-	if (vertical) {
-		if (closest->drop_direction == LEFT) {
-			setfloating(c, 0);
-			scroller_insert_stack(c, closest, true);
-			return;
-		} else if (closest->drop_direction == RIGHT) {
-			setfloating(c, 0);
-			scroller_insert_stack(c, closest, false);
-			return;
-		} else if (closest->drop_direction == UP) {
-			wl_list_remove(&c->link);
-			wl_list_insert(stack_head->link.prev, &c->link);
-		} else if (closest->drop_direction == DOWN) {
-			wl_list_remove(&c->link);
-			wl_list_insert(&stack_head->link, &c->link);
-		}
-	} else {
-		if (closest->drop_direction == UP) {
-			setfloating(c, 0);
-			scroller_insert_stack(c, closest, true);
-			return;
-		} else if (closest->drop_direction == DOWN) {
-			setfloating(c, 0);
-			scroller_insert_stack(c, closest, false);
-			return;
-		} else if (closest->drop_direction == LEFT) {
-			wl_list_remove(&c->link);
-			wl_list_insert(stack_head->link.prev, &c->link);
-		} else if (closest->drop_direction == RIGHT) {
-			wl_list_remove(&c->link);
-			wl_list_insert(&stack_head->link, &c->link);
-		}
-	}
-
-	setfloating(c, 0);
-}
-
-void place_drag_tile_client(Client *c) {
-	Client *closest = find_closest_tiled_client(c);
-
-	if (closest && closest->mon) {
-		const Layout *layout =
-			closest->mon->pertag->ltidxs[closest->mon->pertag->curtag];
-
-		if (closest->drop_direction == UNDIR) {
-			setfloating(c, 0);
-			exchange_two_client(c, closest);
-			return;
-		}
-
-		if (layout->id == SCROLLER) {
-			try_scroller_drop(c, closest, 0);
-			return;
-		}
-		if (layout->id == VERTICAL_SCROLLER) {
-			try_scroller_drop(c, closest, 1);
-			return;
-		}
-		if (layout->id == DWINDLE) {
-			uint32_t tag = c->mon->pertag->curtag;
-			bool insert_before = (closest->drop_direction == LEFT ||
-								  closest->drop_direction == UP);
-			bool split_h = (closest->drop_direction == LEFT ||
-							closest->drop_direction == RIGHT);
-			dwindle_insert(&c->mon->pertag->dwindle_root[tag], c, closest,
-						   config.dwindle_split_ratio, insert_before, split_h,
-						   !config.dwindle_drop_simple_split);
-			setfloating(c, 0);
-			return;
-		}
-
-		if (closest->drop_direction == LEFT || closest->drop_direction == UP) {
-			wl_list_remove(&c->link);
-			wl_list_insert(closest->link.prev, &c->link);
-		} else {
-			wl_list_remove(&c->link);
-			wl_list_insert(&closest->link, &c->link);
-		}
-	}
-
 	setfloating(c, 0);
 }
 
 bool check_trackpad_disabled(struct wlr_pointer *pointer) {
-	if (!config.disable_trackpad) {
+	struct libinput_device *device;
+
+	if (!config.disable_trackpad)
 		return false;
+
+	if (wlr_input_device_is_libinput(&pointer->base) &&
+		(device = wlr_libinput_get_device_handle(&pointer->base))) {
+
+		// 如果是触摸板且被禁用，忽略事件
+		if (libinput_device_config_tap_get_finger_count(device) > 0) {
+			return true; // 不处理事件
+		}
 	}
 
-	return pointer_is_trackpad(pointer);
+	return false;
 }
 
 void // 鼠标按键事件
@@ -2438,16 +2210,10 @@ buttonpress(struct wl_listener *listener, void *data) {
 			last_apply_drap_time = 0;
 			if (tmpc->drag_to_tile && config.drag_tile_to_tile) {
 				place_drag_tile_client(tmpc);
-				tmpc->float_geom = tmpc->drag_tile_float_backup_geom;
 			} else {
 				apply_window_snap(tmpc);
 			}
 			tmpc->drag_to_tile = false;
-			if (dropc) {
-				dropc->enable_drop_area_draw = false;
-				client_set_drop_area(dropc);
-				dropc = NULL;
-			}
 			return;
 		} else {
 			cursor_mode = CurNormal;
@@ -2595,8 +2361,6 @@ void cleanupmon(struct wl_listener *listener, void *data) {
 	LayerSurface *l = NULL, *tmp = NULL;
 	uint32_t i;
 
-	m->iscleanuping = true;
-
 	/* m->layers[i] are intentionally not unlinked */
 	for (i = 0; i < LENGTH(m->layers); i++) {
 		wl_list_for_each_safe(l, tmp, &m->layers[i], link)
@@ -2629,9 +2393,6 @@ void cleanupmon(struct wl_listener *listener, void *data) {
 		m->skip_frame_timeout = NULL;
 	}
 	m->wlr_output->data = NULL;
-
-	for (uint32_t t = 0; t < LENGTH(tags) + 1; t++)
-		dwindle_free_tree(m->pertag->dwindle_root[t]);
 	free(m->pertag);
 	free(m);
 }
@@ -2656,13 +2417,7 @@ void closemon(Monitor *m) {
 		if (c->mon == m) {
 
 			if (selmon == NULL) {
-				if (c->foreign_toplevel) {
-					wlr_foreign_toplevel_handle_v1_output_leave(
-						c->foreign_toplevel, c->mon->wlr_output);
-					wlr_foreign_toplevel_handle_v1_destroy(c->foreign_toplevel);
-					c->foreign_toplevel = NULL;
-				}
-
+				remove_foreign_topleve(c);
 				c->mon = NULL;
 			} else {
 				client_change_mon(c, selmon);
@@ -3047,25 +2802,6 @@ static void createpopup(struct wl_listener *listener, void *data) {
 	wl_signal_add(&wlr_popup->events.reposition, &popup->reposition);
 }
 
-void createtablet(struct wlr_input_device *device) {
-	if (!tablet) {
-		struct libinput_device *device_handle = NULL;
-		if (!wlr_input_device_is_libinput(device) ||
-				!(device_handle = wlr_libinput_get_device_handle(device)))
-			return;
-		tablet = wlr_tablet_create(tablet_mgr, seat, device);
-		wl_signal_add(&tablet->wlr_device->events.destroy, &tablet_device_destroy);
-		if (libinput_device_config_send_events_get_modes(device_handle)) {
-			libinput_device_config_send_events_set_mode(device_handle, config.send_events_mode);
-			wlr_cursor_attach_input_device(cursor, device);
-		}
-	} else if (device == tablet->wlr_device) {
-		wlr_log(WLR_ERROR, "createtablet: duplicate device");
-	} else {
-		wlr_log(WLR_ERROR, "createtablet: already have one tablet");
-	}
-}
-
 void createdecoration(struct wl_listener *listener, void *data) {
 	struct wlr_xdg_toplevel_decoration_v1 *deco = data;
 	Client *c = deco->toplevel->base->data;
@@ -3326,7 +3062,6 @@ void createmon(struct wl_listener *listener, void *data) {
 	struct wl_event_loop *loop = wl_display_get_event_loop(dpy);
 	m = wlr_output->data = ecalloc(1, sizeof(*m));
 
-	m->iscleanuping = false;
 	m->skip_frame_timeout =
 		wl_event_loop_add_timer(loop, monitor_skip_frame_timeout_callback, m);
 	m->skiping_frame = false;
@@ -3509,22 +3244,6 @@ void destroyinputdevice(struct wl_listener *listener, void *data) {
 	free(input_dev);
 }
 
-void pointer_set_accel(struct libinput_device *device, bool natural_scrolling,
-					   uint32_t mouse_accel_profile, double mouse_accel_speed) {
-	libinput_device_config_scroll_set_natural_scroll_enabled(device,
-															 natural_scrolling);
-	if (mouse_accel_profile &&
-		libinput_device_config_accel_is_available(device)) {
-		libinput_device_config_accel_set_profile(device, mouse_accel_profile);
-		libinput_device_config_accel_set_speed(device, mouse_accel_speed);
-	} else {
-		// profile cannot be directly applied to 0, need to set to 1 first
-		libinput_device_config_accel_set_profile(device, 1);
-		libinput_device_config_accel_set_profile(device, 0);
-		libinput_device_config_accel_set_speed(device, 0);
-	}
-}
-
 void configure_pointer(struct libinput_device *device) {
 	if (libinput_device_config_tap_get_finger_count(device)) {
 		libinput_device_config_tap_set_enabled(device, config.tap_to_click);
@@ -3533,12 +3252,11 @@ void configure_pointer(struct libinput_device *device) {
 		libinput_device_config_tap_set_drag_lock_enabled(device,
 														 config.drag_lock);
 		libinput_device_config_tap_set_button_map(device, config.button_map);
-		pointer_set_accel(device, config.trackpad_natural_scrolling,
-						  config.trackpad_accel_profile,
-						  config.trackpad_accel_speed);
+		libinput_device_config_scroll_set_natural_scroll_enabled(
+			device, config.trackpad_natural_scrolling);
 	} else {
-		pointer_set_accel(device, config.mouse_natural_scrolling,
-						  config.mouse_accel_profile, config.mouse_accel_speed);
+		libinput_device_config_scroll_set_natural_scroll_enabled(
+			device, config.mouse_natural_scrolling);
 	}
 
 	if (libinput_device_config_dwt_is_available(device))
@@ -3566,6 +3284,17 @@ void configure_pointer(struct libinput_device *device) {
 	if (libinput_device_config_send_events_get_modes(device))
 		libinput_device_config_send_events_set_mode(device,
 													config.send_events_mode);
+
+	if (config.accel_profile &&
+		libinput_device_config_accel_is_available(device)) {
+		libinput_device_config_accel_set_profile(device, config.accel_profile);
+		libinput_device_config_accel_set_speed(device, config.accel_speed);
+	} else {
+		// profile cannot be directly applied to 0, need to set to 1 first
+		libinput_device_config_accel_set_profile(device, 1);
+		libinput_device_config_accel_set_profile(device, 0);
+		libinput_device_config_accel_set_speed(device, 0);
+	}
 }
 
 void createpointer(struct wlr_pointer *pointer) {
@@ -3825,36 +3554,6 @@ void destroykeyboardgroup(struct wl_listener *listener, void *data) {
 	free(group);
 }
 
-void destroytablet(struct wl_listener *listener, void *data)
-{
-	wl_list_remove(&tablet_device_destroy.link);
-	wlr_cursor_detach_input_device(cursor, tablet->wlr_device);
-	tablet = NULL;
-}
-
-void
-destroytabletpad(struct wl_listener *listener, void *data)
-{
-	wl_list_remove(&tablet_pad_button.link);
-	wl_list_remove(&tablet_pad_destroy.link);
-	tablet_pad = NULL;
-}
-
-void
-destroytabletsurfacenotify(struct wl_listener *listener, void *data)
-{
-	if (tablet_curr_surface)
-		wl_list_remove(&destroy_tablet_surface_listener.link);
-	tablet_curr_surface = NULL;
-}
-
-void
-destroytablettool(struct wl_listener *listener, void *data)
-{
-	destroytabletsurfacenotify(NULL, NULL);
-	tablet_tool = NULL;
-}
-
 void focusclient(Client *c, int32_t lift) {
 
 	Client *last_focus_client = NULL;
@@ -3931,14 +3630,8 @@ void focusclient(Client *c, int32_t lift) {
 	wl_list_for_each(um, &mons, link) {
 		if (um->wlr_output->enabled && um != selmon && um->sel &&
 			!um->sel->iskilling && um->sel->isfocusing) {
-
 			um->sel->isfocusing = false;
 			client_set_unfocused_opacity_animation(um->sel);
-
-			if (um->sel->foreign_toplevel) {
-				wlr_foreign_toplevel_handle_v1_set_activated(
-					um->sel->foreign_toplevel, false);
-			}
 		}
 	}
 
@@ -4045,7 +3738,6 @@ void inputdevice(struct wl_listener *listener, void *data) {
 	 * triggered.
 	 */
 	struct wlr_input_device *device = data;
-	struct wlr_tablet_pad *pad = NULL;
 	uint32_t caps;
 
 	switch (device->type) {
@@ -4060,15 +3752,6 @@ void inputdevice(struct wl_listener *listener, void *data) {
 		break;
 	case WLR_INPUT_DEVICE_TOUCH:
 		createtouch(wlr_touch_from_input_device(device));
-		break;
-  case WLR_INPUT_DEVICE_TABLET:
-		createtablet(device);
-		break;
-	case WLR_INPUT_DEVICE_TABLET_PAD:
-		pad = wlr_tablet_pad_from_input_device(device);
-		tablet_pad = wlr_tablet_pad_create(tablet_mgr, seat, device);
-		wl_signal_add(&pad->events.button,  &tablet_pad_button);
-		wl_signal_add(&device->events.destroy, &tablet_pad_destroy);
 		break;
 	default:
 		/* TODO handle other input device types */
@@ -4407,8 +4090,6 @@ static void iter_xdg_scene_buffers(struct wlr_scene_buffer *buffer, int32_t sx,
 }
 
 void init_client_properties(Client *c) {
-	c->drop_direction = UNDIR;
-	c->enable_drop_area_draw = false;
 	c->isfocusing = false;
 	c->isfloating = 0;
 	c->isfakefullscreen = 0;
@@ -4550,12 +4231,6 @@ mapnotify(struct wl_listener *listener, void *data) {
 	}
 
 	// extra node
-
-	c->droparea = wlr_scene_rect_create(c->scene, 0, 0, config.dropcolor);
-	wlr_scene_node_lower_to_bottom(&c->droparea->node);
-	wlr_scene_node_set_position(&c->droparea->node, 0, 0);
-	wlr_scene_node_set_enabled(&c->droparea->node, false);
-
 	c->border = wlr_scene_rect_create(
 		c->scene, 0, 0, c->isurgent ? config.urgentcolor : config.bordercolor);
 	wlr_scene_node_lower_to_bottom(&c->border->node);
@@ -4670,11 +4345,7 @@ void set_minimized(Client *c) {
 	c->is_scratchpad_show = 0;
 	focusclient(focustop(selmon), 1);
 	arrange(c->mon, false, false);
-
-	if (c->foreign_toplevel)
-		wlr_foreign_toplevel_handle_v1_set_activated(c->foreign_toplevel,
-													 false);
-
+	wlr_foreign_toplevel_handle_v1_set_activated(c->foreign_toplevel, false);
 	wl_list_remove(&c->link);				// 从原来位置移除
 	wl_list_insert(clients.prev, &c->link); // 插入尾部
 }
@@ -4750,7 +4421,6 @@ void motionnotify(uint32_t time, struct wlr_input_device *device, double dx,
 				  double dy, double dx_unaccel, double dy_unaccel) {
 	double sx = 0, sy = 0, sx_confined, sy_confined;
 	Client *c = NULL, *w = NULL;
-	Client *closet_drop_client = NULL;
 	LayerSurface *l = NULL;
 	struct wlr_surface *surface = NULL;
 	struct wlr_pointer_constraint_v1 *constraint;
@@ -4824,24 +4494,6 @@ void motionnotify(uint32_t time, struct wlr_input_device *device, double dx,
 							 .y = (int32_t)round(cursor->y) - grabcy,
 							 .width = grabc->geom.width,
 							 .height = grabc->geom.height};
-		if (config.drag_tile_to_tile && grabc->drag_to_tile) {
-			closet_drop_client = find_closest_tiled_client(grabc);
-			if (closet_drop_client && dropc && closet_drop_client != dropc) {
-				dropc->enable_drop_area_draw = false;
-				client_set_drop_area(dropc);
-				dropc = closet_drop_client;
-				dropc->enable_drop_area_draw = true;
-				client_set_drop_area(dropc);
-			} else if (closet_drop_client) {
-				dropc = closet_drop_client;
-				dropc->enable_drop_area_draw = true;
-				client_set_drop_area(dropc);
-			} else if (dropc) {
-				dropc->enable_drop_area_draw = false;
-				client_set_drop_area(dropc);
-				dropc = NULL;
-			}
-		}
 		resize(grabc, grabc->float_geom, 1);
 		return;
 	} else if (cursor_mode == CurResize) {
@@ -5302,20 +4954,10 @@ void exchange_two_client(Client *c1, Client *c2) {
 		tmp_tags = c2->tags;
 		setmon(c2, c1->mon, c1->tags, false);
 		setmon(c1, tmp_mon, tmp_tags, false);
-		if (c1->mon &&
-			c1->mon->pertag->ltidxs[c1->mon->pertag->curtag]->id == DWINDLE)
-			dwindle_swap_clients(
-				&c1->mon->pertag->dwindle_root[c1->mon->pertag->curtag], c1,
-				c2);
 		arrange(c1->mon, false, false);
 		arrange(c2->mon, false, false);
 		focusclient(c1, 0);
 	} else {
-		if (c1->mon &&
-			c1->mon->pertag->ltidxs[c1->mon->pertag->curtag]->id == DWINDLE)
-			dwindle_swap_clients(
-				&c1->mon->pertag->dwindle_root[c1->mon->pertag->curtag], c1,
-				c2);
 		arrange(c1->mon, false, false);
 	}
 
@@ -5846,7 +5488,7 @@ void setmon(Client *c, Monitor *m, uint32_t newtags, bool focus) {
 		arrange(oldmon, false, false);
 	if (m) {
 		/* Make sure window actually overlaps with the monitor */
-		reset_foreign_tolevel(c, oldmon, m);
+		reset_foreign_tolevel(c);
 		resize(c, c->geom, 0);
 		client_reset_mon_tags(c, m, newtags);
 		check_match_tag_floating_rule(c, m);
@@ -5893,9 +5535,7 @@ void show_hide_client(Client *c) {
 	}
 	client_pending_minimized_state(c, 0);
 	focusclient(c, 1);
-
-	if (c->foreign_toplevel)
-		wlr_foreign_toplevel_handle_v1_set_activated(c->foreign_toplevel, true);
+	wlr_foreign_toplevel_handle_v1_set_activated(c->foreign_toplevel, true);
 }
 
 void create_output(struct wlr_backend *backend, void *data) {
@@ -6109,8 +5749,6 @@ void setup(void) {
 
 	relative_pointer_mgr = wlr_relative_pointer_manager_v1_create(dpy);
 
-	tablet_mgr = wlr_tablet_v2_create(dpy);
-
 	/*
 	 * Creates a cursor, which is a wlroots utility for tracking the cursor
 	 * image shown on screen.
@@ -6146,11 +5784,6 @@ void setup(void) {
 	wl_signal_add(&cursor->events.button, &cursor_button);
 	wl_signal_add(&cursor->events.axis, &cursor_axis);
 	wl_signal_add(&cursor->events.frame, &cursor_frame);
-	wl_signal_add(&cursor->events.tablet_tool_proximity, &tablet_tool_proximity);
-	wl_signal_add(&cursor->events.tablet_tool_axis, &tablet_tool_axis);
-	wl_signal_add(&cursor->events.tablet_tool_button, &tablet_tool_button);
-	wl_signal_add(&cursor->events.tablet_tool_tip, &tablet_tool_tip);
-
 
 	wl_list_init(&touch_groups);
 
@@ -6501,199 +6134,8 @@ void touchcancel(struct wl_listener *listener, void *data) {
 	wlr_idle_notifier_v1_notify_activity(idle_notifier, seat);
 }
 
-void
-tabletapplymap(double x, double y, struct wlr_input_device *dev)
-{
-	Client *p;
-	struct wlr_box geom = {0};
-	if (tabletmaptosurface && tablet_curr_surface) {
-		toplevel_from_wlr_surface(tablet_curr_surface, &p, NULL);
-		if (p) {
-			for (; client_get_parent(p); p = client_get_parent(p));
-			geom.x = p->geom.x + p->bw;
-			geom.y = p->geom.y + p->bw;
-			geom.width = p->geom.width - 2 * p->bw;
-			geom.height = p->geom.height - 2 * p->bw;
-			wlr_cursor_map_input_to_region(cursor, dev, &geom);
-		}
-	}
-	wlr_cursor_map_input_to_output(cursor, dev, selmon->wlr_output);
-}
-
-void
-tabletpadbutton(struct wl_listener *listener, void *data)
-{
-    struct wlr_tablet_pad_button_event *event = data;
-    const TabletPadButton *pb;
-
-    for (pb = tabletpadbuttons; pb < END(tabletpadbuttons); pb++) {
-        if (event->button == pb->button
-                && event->state == pb->state
-                && pb->func) {
-            pb->func(&pb->arg);
-        }
-    }
-
-    if (tablet_pad)
-        wlr_tablet_v2_tablet_pad_notify_button(tablet_pad,
-            event->button, event->time_msec,
-            (enum zwp_tablet_pad_v2_button_state)event->state);
-}
-
-void
-tablettoolmotion(struct wlr_tablet_v2_tablet_tool *tool, bool change_x, bool change_y,
-		double x, double y, double dx, double dy, uint32_t time)
-{
-	struct wlr_surface *surface = NULL;
-	double sx, sy;
-
-	if (!change_x && !change_y)
-		return;
-
-	tabletapplymap(x, y, tablet->wlr_device);
-
-	x = (MAX(tablet_area[0], MIN(tablet_area[0] + tablet_area[2], x)) - tablet_area[0]) / tablet_area[2];
-	y = (MAX(tablet_area[1], MIN(tablet_area[1] + tablet_area[3], y)) - tablet_area[1]) / tablet_area[3];
-
-
-	// TODO: apply constraints
-	switch (tablet_tool->wlr_tool->type) {
-	case WLR_TABLET_TOOL_TYPE_LENS:
-	case WLR_TABLET_TOOL_TYPE_MOUSE:
-		wlr_cursor_move(cursor, tablet->wlr_device, dx, dy);
-		break;
-	default:
-		wlr_cursor_warp_absolute(cursor, tablet->wlr_device, change_x ? x : NAN, change_y ? y : NAN);
-		break;
-	}
-
-	motionnotify(time, NULL, 0, 0, 0, 0);
-
-	xytonode(cursor->x, cursor->y, &surface, NULL, NULL, &sx, &sy);
-	if (surface && !wlr_surface_accepts_tablet_v2(surface, tablet))
-		surface = NULL;
-
-	if (surface != tablet_curr_surface) {
-		if (tablet_curr_surface) {
-			// TODO: wait until all buttons released before leaving
-			if (tablet_tool)
-				wlr_tablet_v2_tablet_tool_notify_proximity_out(tablet_tool);
-			if (tablet_pad)
-				wlr_tablet_v2_tablet_pad_notify_leave(tablet_pad, tablet_curr_surface);
-			wl_list_remove(&destroy_tablet_surface_listener.link);
-		}
-		if (surface) {
-			if (tablet_pad)
-				wlr_tablet_v2_tablet_pad_notify_enter(tablet_pad, tablet, surface);
-			if (tablet_tool)
-				wlr_tablet_v2_tablet_tool_notify_proximity_in(tablet_tool, tablet, surface);
-			wl_signal_add(&surface->events.destroy, &destroy_tablet_surface_listener);
-		}
-		tablet_curr_surface = surface;
-	}
-
-	if (surface)
-		wlr_tablet_v2_tablet_tool_notify_motion(tablet_tool, sx, sy);
-}
-
-void
-tablettoolproximity(struct wl_listener *listener, void *data)
-{
-	struct wlr_tablet_tool_proximity_event *event = data;
-	struct wlr_tablet_tool *tool = event->tool;
-
-	if (!tablet_tool) {
-		tablet_tool = wlr_tablet_tool_create(tablet_mgr, seat, tool);
-		wl_signal_add(&tablet_tool->wlr_tool->events.destroy, &tablet_tool_destroy);
-		wl_signal_add(&tablet_tool->events.set_cursor, &request_cursor);
-	}
-
-	switch (event->state) {
-	case WLR_TABLET_TOOL_PROXIMITY_OUT:
-		wlr_tablet_v2_tablet_tool_notify_proximity_out(tablet_tool);
-		destroytabletsurfacenotify(NULL, NULL);
-		break;
-	case WLR_TABLET_TOOL_PROXIMITY_IN:
-		tablettoolmotion(tablet_tool, true, true, event->x, event->y, 0, 0, event->time_msec);
-		break;
-	}
-}
-
-double tilt_x = 0;
-double tilt_y = 0;
-
-void
-tablettoolaxis(struct wl_listener *listener, void *data)
-{
-	struct wlr_tablet_tool_axis_event *event = data;
-
-	tablettoolmotion(tablet_tool,
-		event->updated_axes & WLR_TABLET_TOOL_AXIS_X,
-		event->updated_axes & WLR_TABLET_TOOL_AXIS_Y,
-		event->x, event->y, event->dx, event->dy, event->time_msec);
-
-	if (event->updated_axes & WLR_TABLET_TOOL_AXIS_PRESSURE)
-		wlr_tablet_v2_tablet_tool_notify_pressure(tablet_tool, event->pressure);
-	if (event->updated_axes & WLR_TABLET_TOOL_AXIS_DISTANCE)
-		wlr_tablet_v2_tablet_tool_notify_distance(tablet_tool, event->distance);
-	if (event->updated_axes & WLR_TABLET_TOOL_AXIS_TILT_X)
-		tilt_x = event->tilt_x;
-	if (event->updated_axes & WLR_TABLET_TOOL_AXIS_TILT_Y)
-		tilt_y = event->tilt_y;
-	if (event->updated_axes & (WLR_TABLET_TOOL_AXIS_TILT_X | WLR_TABLET_TOOL_AXIS_TILT_Y))
-		wlr_tablet_v2_tablet_tool_notify_tilt(tablet_tool, tilt_x, tilt_y);
-	if (event->updated_axes & WLR_TABLET_TOOL_AXIS_ROTATION)
-		wlr_tablet_v2_tablet_tool_notify_rotation(tablet_tool, event->rotation);
-	if (event->updated_axes & WLR_TABLET_TOOL_AXIS_SLIDER)
-		wlr_tablet_v2_tablet_tool_notify_slider(tablet_tool, event->slider);
-	if (event->updated_axes & WLR_TABLET_TOOL_AXIS_WHEEL)
-		wlr_tablet_v2_tablet_tool_notify_wheel(tablet_tool, event->wheel_delta, 0);
-}
-
-void
-tablettoolbutton(struct wl_listener *listener, void *data)
-{
-    struct wlr_tablet_tool_button_event *event = data;
-    const TabletButton *tb;
-
-    for (tb = tabletbuttons; tb < END(tabletbuttons); tb++) {
-        if (event->button == tb->button
-                && event->state == tb->state
-                && tb->func) {
-            tb->func(&tb->arg);
-        }
-    }
-
-    wlr_tablet_v2_tablet_tool_notify_button(tablet_tool, event->button,
-        (enum zwp_tablet_pad_v2_button_state)event->state);
-}
-
-void
-tablettooltip(struct wl_listener *listener, void *data)
-{
-	struct wlr_tablet_tool_tip_event *event = data;
-
-	if (!tablet_curr_surface) {
-		struct wlr_pointer_button_event fakeptrbtnevent = {
-			.button = BTN_LEFT,
-			.state = event->state == WLR_TABLET_TOOL_TIP_UP ?
-				WL_POINTER_BUTTON_STATE_RELEASED : WL_POINTER_BUTTON_STATE_PRESSED,
-			.time_msec = event->time_msec,
-		};
-		buttonpress(NULL, (void *)&fakeptrbtnevent);
-	}
-
-	if (event->state == WLR_TABLET_TOOL_TIP_UP) {
-		wlr_tablet_v2_tablet_tool_notify_up(tablet_tool);
-		return;
-	}
-
-	wlr_tablet_v2_tablet_tool_notify_down(tablet_tool);
-	wlr_tablet_tool_v2_start_implicit_grab(tablet_tool);
-}
-
 void tag_client(const Arg *arg, Client *target_client) {
-  Client *fc = NULL;
+	Client *fc = NULL;
 	if (target_client && arg->ui & TAGMASK) {
 
 		exit_scroller_stack(target_client);
@@ -6913,10 +6355,6 @@ void unmapnotify(struct wl_listener *listener, void *data) {
 		grabc = NULL;
 	}
 
-	if (c == dropc) {
-		dropc = NULL;
-	}
-
 	wl_list_for_each(m, &mons, link) {
 		if (!m->wlr_output->enabled) {
 			continue;
@@ -6987,7 +6425,6 @@ void unmapnotify(struct wl_listener *listener, void *data) {
 	c->next_in_stack = NULL;
 	c->prev_in_stack = NULL;
 
-	dwindle_remove_client(c);
 	wlr_scene_node_destroy(&c->scene->node);
 	printstatus();
 	motionnotify(0, NULL, 0, 0, 0, 0);
@@ -7106,7 +6543,7 @@ void updatemons(struct wl_listener *listener, void *data) {
 		wl_list_for_each(c, &clients, link) {
 			if (!c->mon && client_surface(c)->mapped) {
 				c->mon = selmon;
-				reset_foreign_tolevel(c, NULL, c->mon);
+				reset_foreign_tolevel(c);
 			}
 			if (c->tags == 0 && !c->is_in_scratchpad) {
 				c->tags = selmon->tagset[selmon->seltags];

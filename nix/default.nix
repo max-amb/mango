@@ -11,14 +11,14 @@
   wayland,
   wayland-protocols,
   wayland-scanner,
-  libxcb-wm,
+  libxcb-wm ? null,
   xwayland,
   meson,
   ninja,
   scenefx,
   wlroots_0_19,
   libGL,
-  enableXWayland ? true,
+  enableXWayland ? false,
   debug ? false,
 }:
 stdenv.mkDerivation {
