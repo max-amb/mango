@@ -16,14 +16,18 @@
 
 https://github.com/user-attachments/assets/bb83004a-0563-4b48-ad89-6461a9b78b1f
 
+https://github.com/user-attachments/assets/be85e13f-7798-456d-957e-f8931687392e
+
+
+
 > See all layouts in action at [mangowm.github.io](https://mangowm.github.io/)
 
 ## Why Mango?
 
 Mango starts where dwl ends. It keeps the lightweight, fast-build philosophy while adding the features that make a compositor actually usable day-to-day — without the bloat.
 
-- **Lightweight & fast** — as lean as dwl, builds in seconds, no functionality compromised
-- **Excellent xwayland support** — run X11 apps without friction
+- **Lightweight & fast** — as lean as dwl, no functionality compromised
+- **Excellent xwayland support** — run X11 apps without friction(Supports scale without blurring)
 - **Tags, not workspaces** — each tag maintains its own independent window layout
 - **Smooth animations** — window open/move/close, tag transitions, layer surfaces
 - **Flexible layouts** — scroller, master-stack, monocle, dwindle, grid, and more
@@ -109,6 +113,12 @@ Thanks to everyone who has sponsored this project:
       <a href="https://github.com/vinthara">
         <img src="https://unavatar.io/github/vinthara" width="48" style="border-radius:50%"/><br/>
         <sub>vinthara</sub>
+      </a>
+    </td>
+    <td align="center">
+      <a href="https://github.com/stepbrobd">
+        <img src="https://unavatar.io/github/stepbrobd" width="48" style="border-radius:50%"/><br/>
+        <sub>stepbrobd</sub>
       </a>
     </td>
   </tr>

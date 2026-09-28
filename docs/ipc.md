@@ -24,6 +24,7 @@ description: Control mangowm programmatically using mmsg.
 | Command | Description |
 | :--- | :--- |
 | `get version` | Returns the current version of the compositor. |
+| `get cursorpos` | Returns the global pointer position (`x`, `y`) and the monitor under it. |
 | `get keymode` | Returns the current active keyboard mode (e.g., normal, insert). |
 | `get keyboardlayout` | Returns the active XKB layout (abbreviated). |
 | `get monitor <name>` | Returns full JSON details for a specific monitor. |
@@ -33,6 +34,8 @@ description: Control mangowm programmatically using mmsg.
 | `get tags <mon>` | Returns a JSON object containing the status of all tags on a monitor. |
 | `get all-clients` | Returns a JSON array of all active clients. |
 | `get all-monitors` | Returns a JSON array of all connected monitors. |
+| `get all-devices` | Returns a JSON array of all physical input devices, grouped by libinput device group (`name`, `types`, `identifier`, `vendor`, `product`, `interfaces`, `matched`). |
+| `get all-layers` | Returns a JSON array of all open layer surfaces (`monitor`, `layer`, `name`). |
 | `get all-tags` | Returns a JSON object containing the status of all tags. |
 | `get last_open_surface [<mon>]` | Returns the last focused surface name for a monitor,if the mon not set, it will get current monitor. |
 
@@ -41,6 +44,9 @@ description: Control mangowm programmatically using mmsg.
 mmsg get monitor eDP-1
 mmsg get all-clients
 mmsg get all-monitors
+mmsg get all-devices
+mmsg get all-layers
+mmsg get cursorpos
 ```
 
 ### WATCH (Event Subscription)
@@ -53,6 +59,7 @@ Subscribes the client to real-time updates. When the state changes, the server p
 * `watch all-monitors`
 * `watch all-tags`
 * `watch all-clients`
+* `watch all-devices` — streams the last input device (`name`, `type`) that triggered an event
 * `watch keymode`
 * `watch keyboardlayout`
 * `watch last_open_surface [<mon_name>]`

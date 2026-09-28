@@ -7,11 +7,15 @@
 #include <sys/un.h>
 #include <unistd.h>
 
+#include "mango/common/log.h"
+
 static void usage(void) {
 	printf("Usage: mmsg <command> [args...]\n\n");
 	printf("One-shot queries (get):\n");
 	printf(
 		"  get version                              Show compositor version\n");
+	printf("  get cursorpos                            Show pointer position + "
+		   "monitor\n");
 	printf("  get keymode                              Show current keymode\n");
 	printf("  get keyboardlayout                       Show current keyboard "
 		   "layout\n");
@@ -26,8 +30,14 @@ static void usage(void) {
 		   "(1‑based index)\n");
 	printf("  get all-clients                          List all clients\n");
 	printf("  get all-monitors                         List all monitors\n");
+	printf("  get all-devices                          List physical input "
+		   "devices\n");
+	printf("  get all-layers                           List all open layer "
+		   "surfaces\n");
 	printf("  get all-tags                             List all tags (all "
 		   "monitors)\n");
+	printf("  get layouts                              List all available "
+		   "layouts\n");
 	printf(
 		"  get tags <monitor>                       List tags for a monitor\n");
 	printf("  dispatch <func>[,arg...] [client,<id>]   Call a compositor "
@@ -54,6 +64,8 @@ static void usage(void) {
 		"  watch all-tags                           Stream all tags changes\n");
 	printf("  watch all-clients                        Stream all clients "
 		   "changes\n");
+	printf("  watch all-devices                        Stream the last input "
+		   "device that triggered an event\n");
 	printf(
 		"  watch keymode                            Stream keymode changes\n");
 	printf("  watch keyboardlayout                     Stream keyboard layout "
@@ -75,16 +87,18 @@ int main(int argc, char *argv[]) {
 	}
 
 	if (argc < 2) {
-		fprintf(stderr, "Usage: mmsg <command> [args...]\n");
-		fprintf(stderr, "  get <type> ...      one-shot request\n");
-		fprintf(stderr, "  watch <type> ...    persistent stream\n");
+		mango_error(false, WLR_INFO,
+					"Usage: mmsg <command> [args...]\n"
+					"  get <type> ...      one-shot request\n"
+					"  watch <type> ...    persistent stream\n");
 		return EXIT_FAILURE;
 	}
 
 	const char *socket_path = getenv("MANGO_INSTANCE_SIGNATURE");
 	if (!socket_path) {
-		fprintf(stderr, "Error: MANGO_INSTANCE_SIGNATURE is not set. Did you "
-						"run 'mmsg' in mango?\n");
+		mango_error(false, WLR_ERROR,
+					"MANGO_INSTANCE_SIGNATURE is not set. Did you run "
+					"'mmsg' in mango?\n");
 		return EXIT_FAILURE;
 	}
 
@@ -109,7 +123,7 @@ int main(int argc, char *argv[]) {
 		int n = snprintf(cmd + offset, sizeof(cmd) - offset, "%s%s", argv[i],
 						 (i == argc - 1) ? "" : " ");
 		if (n < 0 || n >= (int)(sizeof(cmd) - offset)) {
-			fprintf(stderr, "Error: command too long.\n");
+			mango_error(false, WLR_ERROR, "command too long.\n");
 			close(sock);
 			return EXIT_FAILURE;
 		}
@@ -118,7 +132,7 @@ int main(int argc, char *argv[]) {
 
 	int n = snprintf(cmd + offset, sizeof(cmd) - offset, "\n");
 	if (n < 0 || n >= (int)(sizeof(cmd) - offset)) {
-		fprintf(stderr, "Error: command too long to append newline.\n");
+		mango_error(false, WLR_ERROR, "command too long to append newline.\n");
 		close(sock);
 		return EXIT_FAILURE;
 	}

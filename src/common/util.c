@@ -1,12 +1,18 @@
 /* See LICENSE.dwm file for copyright and license details. */
+#include <errno.h>
 #include <fcntl.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/wait.h>
 #include <time.h>
+#include <unistd.h>
 
-#include "util.h"
+#include <wlr/util/log.h>
+
+#include "mango/common/log.h"
+#include "mango/common/util.h"
 
 #define PCRE2_CODE_UNIT_WIDTH 8
 #include <pcre2.h>
@@ -36,6 +42,21 @@ void *ecalloc(size_t nmemb, size_t size) {
 	return p;
 }
 
+static void utf8_strlcpy(char *dst, const char *src, size_t size) {
+	size_t len = strnlen(src, size - 1);
+
+	while (len > 0 && ((unsigned char)src[len] & 0xc0) == 0x80)
+		len--;
+
+	memcpy(dst, src, len);
+	dst[len] = '\0';
+}
+
+const char *wayland_string_set(struct wayland_string *dst, const char *src) {
+	utf8_strlcpy(dst->data, src ? src : "", sizeof(dst->data));
+	return dst->data;
+}
+
 int32_t fd_set_nonblock(int32_t fd) {
 	int32_t flags = fcntl(fd, F_GETFL);
 	if (flags < 0) {
@@ -59,12 +80,13 @@ int32_t regex_match(const char *pattern, const char *str) {
 	}
 
 	pcre2_code *re = pcre2_compile((PCRE2_SPTR)pattern, PCRE2_ZERO_TERMINATED,
-								   PCRE2_UTF, // 启用 UTF-8 支持
+								   PCRE2_UTF, // Enables UTF-8 support.
 								   &errnum, &erroffset, NULL);
 	if (!re) {
 		PCRE2_UCHAR errbuf[256];
 		pcre2_get_error_message(errnum, errbuf, sizeof(errbuf));
-		fprintf(stderr, "PCRE2 error: %s at offset %zu\n", errbuf, erroffset);
+		mango_error(false, WLR_ERROR, "PCRE2 error: %s at offset %zu\n", errbuf,
+					erroffset);
 		return 0;
 	}
 
@@ -181,21 +203,21 @@ void wl_list_swap(struct wl_list *l1, struct wl_list *l2) {
 	struct wl_list *tmp1_next = l1->next;
 	struct wl_list *tmp2_next = l2->next;
 
-	if (l1->next == l2) { /* l1 -> l2 相邻 */
+	if (l1->next == l2) { /* l1 -> l2 are adjacent. */
 		l1->next = l2->next;
 		l1->prev = l2;
 		l2->next = l1;
 		l2->prev = tmp1_prev;
 		tmp1_prev->next = l2;
 		tmp2_next->prev = l1;
-	} else if (l2->next == l1) { /* l2 -> l1 相邻 */
+	} else if (l2->next == l1) { /* l2 -> l1 are adjacent. */
 		l2->next = l1->next;
 		l2->prev = l1;
 		l1->next = l2;
 		l1->prev = tmp2_prev;
 		tmp2_prev->next = l1;
 		tmp1_next->prev = l2;
-	} else { /* 不相邻 */
+	} else { /* Not adjacent. */
 		l2->next = tmp1_next;
 		l2->prev = tmp1_prev;
 		l1->next = tmp2_next;
@@ -205,4 +227,60 @@ void wl_list_swap(struct wl_list *l1, struct wl_list *l2) {
 		tmp2_prev->next = l1;
 		tmp2_next->prev = l1;
 	}
+}
+
+void wl_list_safe_reinsert_prev(struct wl_list *l1, struct wl_list *l2) {
+	if (!l1 || !l2)
+		return;
+	if (l1 == l2)
+		return;
+	if (l1->prev == l2)
+		return;
+
+	wl_list_remove(l2);
+	wl_list_init(l2);
+	wl_list_insert(l1->prev, l2);
+}
+
+void wl_list_safe_reinsert_next(struct wl_list *l1, struct wl_list *l2) {
+	if (!l1 || !l2)
+		return;
+	if (l1 == l2)
+		return;
+	if (l1->next == l2)
+		return;
+
+	wl_list_remove(l2);
+	wl_list_init(l2);
+	wl_list_insert(l1, l2);
+}
+
+int32_t mango_exec(const char *cmd) {
+	if (!cmd)
+		return -1;
+
+	pid_t pid = fork();
+	if (pid < 0) {
+		mango_error(true, WLR_ERROR, "mango: failed to fork: %s\n",
+					strerror(errno));
+		return -1;
+	}
+
+	if (pid == 0) {
+		dup2(STDERR_FILENO, STDOUT_FILENO);
+		setsid();
+
+		execlp("sh", "sh", "-c", cmd, (char *)NULL);
+		execlp("bash", "bash", "-c", cmd, (char *)NULL);
+
+		mango_error(true, WLR_DEBUG,
+					"mango: failed to execute command '%s' with shell: %s\n",
+					cmd, strerror(errno));
+		_exit(EXIT_FAILURE);
+	}
+
+	int32_t status;
+	while (waitpid(pid, &status, 0) < 0 && errno == EINTR)
+		;
+	return 0;
 }
